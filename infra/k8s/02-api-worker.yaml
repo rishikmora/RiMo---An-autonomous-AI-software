@@ -1,0 +1,178 @@
+# --- Migration Job: enable pgvector + alembic upgrade head --------------------
+# Re-run on each release (helm hook / kubectl apply). Idempotent.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: rimo-migrate
+  namespace: rimo
+  annotations:
+    # If using Helm, treat as a pre-upgrade hook. With raw kubectl, delete the
+    # completed job before re-applying: kubectl -n rimo delete job rimo-migrate
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: rimo-migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/rishikmora/rimo-backend:latest
+          command:
+            - sh
+            - -c
+            - >
+              python -c "import os,psycopg;
+              dsn=os.environ['DATABASE_URL'].replace('+asyncpg','');
+              c=psycopg.connect(dsn); c.autocommit=True;
+              c.execute('CREATE EXTENSION IF NOT EXISTS vector'); print('pgvector ready')"
+              && alembic upgrade head
+          envFrom:
+            - configMapRef:
+                name: rimo-config
+            - secretRef:
+                name: rimo-secrets
+---
+# --- API ----------------------------------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rimo-api
+  namespace: rimo
+  labels:
+    app: rimo-api
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rimo-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: rimo-api
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: api
+          image: ghcr.io/rishikmora/rimo-backend:latest
+          command:
+            ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: rimo-config
+            - secretRef:
+                name: rimo-secrets
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "512Mi"
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+          volumeMounts:
+            - name: workspaces
+              mountPath: /data/workspaces
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: rimo-workspaces
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: rimo-workspaces
+  namespace: rimo
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 30Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rimo-api
+  namespace: rimo
+spec:
+  selector:
+    app: rimo-api
+  ports:
+    - port: 8000
+      targetPort: 8000
+---
+# --- Worker (the 24/7 autonomous loop) ----------------------------------------
+# Single replica by design: project ticks are coordinated through DB task
+# leases, so one worker is correct and safe. Scale the API, not the worker,
+# unless you sniff-test lease contention first.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rimo-worker
+  namespace: rimo
+  labels:
+    app: rimo-worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: rimo-worker
+  template:
+    metadata:
+      labels:
+        app: rimo-worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: worker
+          image: ghcr.io/rishikmora/rimo-backend:latest
+          command: ["python", "-m", "app.orchestration.worker"]
+          envFrom:
+            - configMapRef:
+                name: rimo-config
+            - secretRef:
+                name: rimo-secrets
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "768Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+          volumeMounts:
+            - name: workspaces
+              mountPath: /data/workspaces
+      volumes:
+        - name: workspaces
+          persistentVolumeClaim:
+            claimName: rimo-workspaces

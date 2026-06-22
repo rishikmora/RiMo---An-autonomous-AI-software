@@ -1,0 +1,29 @@
+[project]
+name = "rimo-backend"
+version = "1.0.0"
+description = "RiMo — autonomous multi-agent software engineering platform (backend)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+# Correctness-focused: pycodestyle errors, pyflakes, import order, and bugbear.
+# StrEnum modernization (UP042) is intentionally not enforced — the domain
+# enums inherit (str, Enum) so they serialize cleanly to JSON and Postgres.
+select = ["E", "F", "I", "B"]
+ignore = ["E501", "B008"]  # line-length handled by formatter; B008 = FastAPI Depends default
+
+[tool.mypy]
+python_version = "3.11"
+warn_unused_ignores = true
+ignore_missing_imports = true
+plugins = []

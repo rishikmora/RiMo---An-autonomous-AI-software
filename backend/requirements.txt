@@ -1,0 +1,36 @@
+# --- Web framework ----------------------------------------------------------
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.20
+
+# --- Data / ORM -------------------------------------------------------------
+sqlalchemy[asyncio]==2.0.36
+asyncpg==0.30.0
+psycopg[binary]==3.2.3
+alembic==1.14.0
+pgvector==0.3.6
+
+# --- Validation / settings --------------------------------------------------
+pydantic[email]==2.10.4
+pydantic-settings==2.7.0
+email-validator==2.2.0
+
+# --- AI ----------------------------------------------------------------------
+anthropic==0.42.0
+openai==1.59.2            # optional embeddings provider; falls back if unset
+
+# --- Auth --------------------------------------------------------------------
+pyjwt[crypto]==2.10.1
+passlib[bcrypt]==1.7.4
+
+# --- Infra clients ----------------------------------------------------------
+redis==5.2.1
+httpx==0.28.1
+
+# --- Observability ----------------------------------------------------------
+structlog==24.4.0
+prometheus-client==0.21.1
+
+# --- Testing ----------------------------------------------------------------
+pytest==8.3.4
+pytest-asyncio==0.25.0

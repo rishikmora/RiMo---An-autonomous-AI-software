@@ -1,0 +1,49 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rimo
+  labels:
+    app.kubernetes.io/name: rimo
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rimo-config
+  namespace: rimo
+data:
+  APP_ENV: "production"
+  LOG_JSON: "true"
+  REDIS_URL: "redis://redis:6379/0"
+  WORKSPACE_ROOT: "/data/workspaces"
+  DEFAULT_MODEL: "claude-opus-4-8"
+  FAST_MODEL: "claude-haiku-4-5-20251001"
+  MAX_CONCURRENT_PROJECTS: "10"
+  REQUIRE_HUMAN_APPROVAL_FOR_MERGE: "true"
+  REQUIRE_HUMAN_APPROVAL_FOR_DEPLOY: "true"
+---
+# Template only. Create the real secret out-of-band, e.g.:
+#   kubectl -n rimo create secret generic rimo-secrets \
+#     --from-literal=SECRET_KEY=$(openssl rand -hex 32) \
+#     --from-literal=ANTHROPIC_API_KEY=sk-ant-... \
+#     --from-literal=DATABASE_URL='postgresql+asyncpg://rimo:PASS@postgres:5432/rimo' \
+#     --from-literal=POSTGRES_PASSWORD=PASS \
+#     --from-literal=OPENAI_API_KEY=... \
+#     --from-literal=GITHUB_APP_ID=... \
+#     --from-literal=GITHUB_PRIVATE_KEY="$(cat key.pem)" \
+#     --from-literal=GITHUB_WEBHOOK_SECRET=...
+# Do NOT commit real secret values. This stub documents the required keys.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: rimo-secrets
+  namespace: rimo
+type: Opaque
+stringData:
+  SECRET_KEY: "REPLACE_ME_openssl_rand_hex_32"
+  ANTHROPIC_API_KEY: "REPLACE_ME"
+  DATABASE_URL: "postgresql+asyncpg://rimo:rimo@postgres:5432/rimo"
+  POSTGRES_PASSWORD: "rimo"
+  OPENAI_API_KEY: ""
+  GITHUB_APP_ID: ""
+  GITHUB_PRIVATE_KEY: ""
+  GITHUB_WEBHOOK_SECRET: ""

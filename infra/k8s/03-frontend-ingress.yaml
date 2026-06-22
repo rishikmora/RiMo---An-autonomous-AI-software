@@ -1,0 +1,121 @@
+# --- Frontend (Next.js dashboard) --------------------------------------------
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rimo-frontend
+  namespace: rimo
+  labels:
+    app: rimo-frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: rimo-frontend
+  template:
+    metadata:
+      labels:
+        app: rimo-frontend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+      containers:
+        - name: frontend
+          image: ghcr.io/rishikmora/rimo-frontend:latest
+          ports:
+            - containerPort: 3000
+          env:
+            - name: NODE_ENV
+              value: production
+            # In-cluster, the dashboard proxies /api/* to the API service.
+            - name: RIMO_API_URL
+              value: http://rimo-api:8000
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rimo-frontend
+  namespace: rimo
+spec:
+  selector:
+    app: rimo-frontend
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+# --- Autoscaling: scale the stateless API on CPU ------------------------------
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rimo-api
+  namespace: rimo
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: rimo-api
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+---
+# --- Ingress ------------------------------------------------------------------
+# Routes the dashboard at the root and the API under /api and /docs.
+# Assumes an ingress-nginx controller and cert-manager for TLS.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: rimo
+  namespace: rimo
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"   # SSE streams
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"        # SSE streams
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["rimo.example.com"]
+      secretName: rimo-tls
+  rules:
+    - host: rimo.example.com
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: rimo-api
+                port:
+                  number: 8000
+          - path: /docs
+            pathType: Prefix
+            backend:
+              service:
+                name: rimo-api
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: rimo-frontend
+                port:
+                  number: 3000
