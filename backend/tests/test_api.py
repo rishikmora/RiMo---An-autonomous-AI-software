@@ -45,7 +45,7 @@ async def client():
 
 
 async def _auth_headers(client: AsyncClient) -> dict[str, str]:
-    email = f"user-{uuid.uuid4().hex[:8]}@rimo.test"
+    email = f"user-{uuid.uuid4().hex[:8]}@rimo.example"
     reg = await client.post(
         "/api/v1/auth/register",
         json={"email": email, "password": "supersecret123", "full_name": "Test Operator"},
@@ -71,7 +71,7 @@ async def test_register_login_me(client: AsyncClient) -> None:
     headers = await _auth_headers(client)
     me = await client.get("/api/v1/auth/me", headers=headers)
     assert me.status_code == 200
-    assert me.json()["email"].endswith("@rimo.test")
+    assert me.json()["email"].endswith("@rimo.example")
 
 
 async def test_unauthenticated_dashboard_rejected(client: AsyncClient) -> None:

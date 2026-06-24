@@ -6,7 +6,7 @@
 
 **Ten specialist agents that plan, build, review, test, secure, and ship software around the clock.**
 
-[Architecture](docs/architecture.md) · [Database Schema](docs/database-schema.md) · [Deployment](docs/deployment.md)
+[Architecture](docs/architecture.md) · [Database Schema](docs/database-schema.md) · [Deployment](docs/deployment.md) · [Intelligence Layer](docs/intelligence-layer.md) · [Evidence](docs/evidence.md) · [ADRs](docs/adr/0004-server-sent-events.md#adr-index)
 
 </div>
 
@@ -42,6 +42,21 @@ plan (CEO → Planner)
 ```
 
 State lives in Postgres, tasks carry time-bound leases, and a single `tick()` advances one unit of work — so the worker can run 24/7 and self-heal from crashes. Full detail in [the architecture doc](docs/architecture.md).
+
+## Intelligence layer
+
+Beyond the ten-agent pipeline, RiMo ships a capability layer most agent systems lack — all real, tested, and wired into the running system ([full detail](docs/intelligence-layer.md)):
+
+- **Knowledge graph** — a typed graph of every file, class, function, route, and table (AST + PageRank centrality) that agents query for blast radius before changing anything.
+- **Multi-model routing** — every agent call is routed by complexity tier to the most cost-effective model, with a live cost ledger showing 70–90% savings vs. frontier-only.
+- **Agent debate** — Architect → Reviewer → Security → QA challenge each other before code ships; blockers stop a merge.
+- **Self-evolving prompts** — Thompson-sampling bandit over prompt variants, with weekly evolution of the champion.
+- **Failure recovery** — autonomous diagnose → retry → rollback → escalate, with incident timelines.
+- **Architecture refactoring** — graph-driven smell detection (God objects, cycles, hubs) → scoped refactor tasks.
+- **Economic reasoning** — cost ledger, unit economics, routing savings, and a budget guard.
+- **Autonomous benchmarking** — rejects latency/memory/bundle regressions before merge.
+- **RiMo OS** — a fleet scheduler ranking the whole project portfolio by attention, plus a marketplace of hireable specialists (Flutter, ML, Next.js…) auto-matched to each stack.
+- **Self-improvement loop** — weekly reflection that mines failures, evolves prompts, and writes lessons to memory.
 
 ## Tech stack
 
@@ -98,14 +113,20 @@ RiMo is built to be trusted with real repositories:
 ## Development
 
 ```bash
-# backend
-cd backend && pip install -r requirements.txt
-ruff check app && pytest
+# backend (tests need Postgres + Redis reachable; see docker compose up postgres redis -d)
+cd backend && pip install -r requirements.txt -r requirements-dev.txt
+ruff check app tests && pytest          # 74 tests, incl. orchestrator state-machine tests
 
 # frontend
 cd frontend && npm install
-npm run typecheck && npm run lint && npm run build
+npm run typecheck && npm run lint && npm test && npm run build   # 9 component/client tests
 ```
+
+The backend suite runs the orchestrator's state machine against a real Postgres —
+lease reclaim, the approval gate, and the cost cap are proven, not just asserted
+(see [docs/evidence.md](docs/evidence.md)). DB-dependent tests skip cleanly when
+no database is reachable. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full
+workflow and [SECURITY.md](SECURITY.md) for the security model.
 
 CI runs all of the above on every push, builds both Docker images, and pushes them to GHCR on `main`.
 

@@ -38,6 +38,7 @@ class Worker:
 
     async def run_forever(self) -> None:
         logger.info("worker_started", concurrency=settings.max_concurrent_projects)
+        cycle = 0
         while not self._stop.is_set():
             try:
                 await self._reclaim_expired_leases()
@@ -46,10 +47,37 @@ class Worker:
                     await self._sleep(settings.heartbeat_interval_seconds)
                     continue
                 await asyncio.gather(*(self._advance(pid) for pid in project_ids))
+
+                # Slower maintenance cadence: autonomous research surveys and
+                # knowledge-graph/refactor upkeep run every Nth cycle so they
+                # don't compete with the per-task execution loop.
+                cycle += 1
+                if cycle % settings.maintenance_cycle_interval == 0:
+                    await asyncio.gather(
+                        *(self._maintain(pid) for pid in project_ids),
+                        return_exceptions=True,
+                    )
             except Exception as exc:  # never let the loop die
                 logger.error("worker_cycle_error", error=str(exc))
             await self._sleep(2)
         logger.info("worker_stopped")
+
+    async def _maintain(self, project_id) -> None:
+        """Run autonomous background upkeep for a project (best-effort).
+
+        Honors an opt-in research request flag set via the API, and is the hook
+        where periodic knowledge-graph rebuilds and refactor scans are triggered
+        by the orchestrator. Failures here never block the main loop.
+        """
+        async with self._semaphore, session_scope() as session:
+            project = await session.get(Project, project_id)
+            if project is None or project.status != ProjectStatus.ACTIVE:
+                return
+            orch = Orchestrator(session)
+            try:
+                await orch.run_maintenance(project)
+            except Exception as exc:  # noqa: BLE001 - upkeep is best-effort
+                logger.warning("maintenance_failed", project=str(project_id), error=str(exc))
 
     async def _advance(self, project_id) -> None:
         async with self._semaphore, session_scope() as session:

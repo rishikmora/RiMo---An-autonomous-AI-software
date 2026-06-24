@@ -25,8 +25,10 @@ from app.models import (
     User,
 )
 from app.models.enums import (
+    AgentStatus,
     ApprovalKind,
     DeploymentStatus,
+    ProjectStatus,
     PullRequestStatus,
     TaskStatus,
 )
@@ -328,7 +330,14 @@ async def dashboard_summary(
     project_ids_stmt = select(Project.id).where(Project.owner_id == user.id)
     project_ids = [r[0] for r in (await session.execute(project_ids_stmt)).all()]
     if not project_ids:
-        return DashboardSummary(0, 0, 0, 0, 0, 0)
+        return DashboardSummary(
+            projects_active=0,
+            agents_running=0,
+            tasks_queued=0,
+            prs_open=0,
+            deployments_today=0,
+            pending_approvals=0,
+        )
 
     async def count(model, *conditions) -> int:
         stmt = select(func.count()).select_from(model).where(*conditions)
@@ -336,8 +345,8 @@ async def dashboard_summary(
 
     today = datetime.now(UTC).replace(hour=0, minute=0, second=0, microsecond=0)
     return DashboardSummary(
-        projects_active=await count(Project, Project.owner_id == user.id, Project.status == "active"),
-        agents_running=await count(Agent, Agent.project_id.in_(project_ids), Agent.status.in_(["working", "thinking"])),
+        projects_active=await count(Project, Project.owner_id == user.id, Project.status == ProjectStatus.ACTIVE),
+        agents_running=await count(Agent, Agent.project_id.in_(project_ids), Agent.status.in_([AgentStatus.WORKING, AgentStatus.THINKING])),
         tasks_queued=await count(Task, Task.project_id.in_(project_ids), Task.status == TaskStatus.READY),
         prs_open=await count(PullRequest, PullRequest.project_id.in_(project_ids), PullRequest.status == PullRequestStatus.OPEN),
         deployments_today=await count(Deployment, Deployment.project_id.in_(project_ids), Deployment.created_at >= today),

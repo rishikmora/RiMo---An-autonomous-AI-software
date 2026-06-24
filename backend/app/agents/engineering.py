@@ -35,11 +35,13 @@ class BuilderAgent(BaseAgent):
         )
 
     def build_tools(self, ctx: AgentContext, registry: ToolRegistry) -> None:
-        if ctx.github:
-            build_engineering_toolset(
-                registry, gh=ctx.github, project=ctx.project,
-                workspace=ctx.workspace, branch=ctx.branch,
-            )
+        # Always register the workspace toolset: file staging and secret_scan
+        # work without a connected repo (greenfield/local). The repo-read tools
+        # degrade gracefully to "no repository connected" when gh is None.
+        build_engineering_toolset(
+            registry, gh=ctx.github, project=ctx.project,
+            workspace=ctx.workspace, branch=ctx.branch,
+        )
 
     def build_prompt(self, ctx: AgentContext, memory_context: str) -> str:
         t = ctx.task
@@ -77,11 +79,13 @@ class ReviewerAgent(BaseAgent):
         )
 
     def build_tools(self, ctx: AgentContext, registry: ToolRegistry) -> None:
-        if ctx.github:
-            build_engineering_toolset(
-                registry, gh=ctx.github, project=ctx.project,
-                workspace=ctx.workspace, branch=ctx.branch,
-            )
+        # Always register the workspace toolset: file staging and secret_scan
+        # work without a connected repo (greenfield/local). The repo-read tools
+        # degrade gracefully to "no repository connected" when gh is None.
+        build_engineering_toolset(
+            registry, gh=ctx.github, project=ctx.project,
+            workspace=ctx.workspace, branch=ctx.branch,
+        )
 
     def build_prompt(self, ctx: AgentContext, memory_context: str) -> str:
         staged = "\n".join(f"- {p}" for p in ctx.workspace.staged) or "(none)"
@@ -113,11 +117,13 @@ class QAAgent(BaseAgent):
         )
 
     def build_tools(self, ctx: AgentContext, registry: ToolRegistry) -> None:
-        if ctx.github:
-            build_engineering_toolset(
-                registry, gh=ctx.github, project=ctx.project,
-                workspace=ctx.workspace, branch=ctx.branch,
-            )
+        # Always register the workspace toolset: file staging and secret_scan
+        # work without a connected repo (greenfield/local). The repo-read tools
+        # degrade gracefully to "no repository connected" when gh is None.
+        build_engineering_toolset(
+            registry, gh=ctx.github, project=ctx.project,
+            workspace=ctx.workspace, branch=ctx.branch,
+        )
 
     def build_prompt(self, ctx: AgentContext, memory_context: str) -> str:
         staged = "\n".join(f"- {p}" for p in ctx.workspace.staged) or "(none)"
@@ -148,11 +154,13 @@ class SecurityAgent(BaseAgent):
         )
 
     def build_tools(self, ctx: AgentContext, registry: ToolRegistry) -> None:
-        if ctx.github:
-            build_engineering_toolset(
-                registry, gh=ctx.github, project=ctx.project,
-                workspace=ctx.workspace, branch=ctx.branch,
-            )
+        # Always register the workspace toolset: file staging and secret_scan
+        # work without a connected repo (greenfield/local). The repo-read tools
+        # degrade gracefully to "no repository connected" when gh is None.
+        build_engineering_toolset(
+            registry, gh=ctx.github, project=ctx.project,
+            workspace=ctx.workspace, branch=ctx.branch,
+        )
 
     def build_prompt(self, ctx: AgentContext, memory_context: str) -> str:
         staged = "\n".join(f"- {p}" for p in ctx.workspace.staged) or "(none)"
@@ -183,11 +191,13 @@ class DevOpsAgent(BaseAgent):
         )
 
     def build_tools(self, ctx: AgentContext, registry: ToolRegistry) -> None:
-        if ctx.github:
-            build_engineering_toolset(
-                registry, gh=ctx.github, project=ctx.project,
-                workspace=ctx.workspace, branch=ctx.branch,
-            )
+        # Always register the workspace toolset: file staging and secret_scan
+        # work without a connected repo (greenfield/local). The repo-read tools
+        # degrade gracefully to "no repository connected" when gh is None.
+        build_engineering_toolset(
+            registry, gh=ctx.github, project=ctx.project,
+            workspace=ctx.workspace, branch=ctx.branch,
+        )
 
     def build_prompt(self, ctx: AgentContext, memory_context: str) -> str:
         env = ctx.extra.get("environment", "staging")

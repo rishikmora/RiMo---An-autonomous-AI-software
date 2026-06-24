@@ -19,6 +19,8 @@ from sqlalchemy import text
 from app.api import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging, get_logger
+from app.core.ratelimit import limiter
+from app.core.trace import bind_trace_id, clear_trace_id
 from app.db.session import engine
 from app.orchestration.event_bus import get_event_bus
 
@@ -57,25 +59,44 @@ def create_app() -> FastAPI:
         openapi_url=f"{settings.api_v1_prefix}/openapi.json",
     )
 
+    # --- Rate limiting ------------------------------------------------------
+    # The limiter is attached to app state; sensitive routes opt in via the
+    # @limiter.limit decorator (see app/api/auth.py). Exceeding a limit returns
+    # HTTP 429 with Retry-After.
+    from slowapi import _rate_limit_exceeded_handler
+    from slowapi.errors import RateLimitExceeded
+
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
     # --- CORS ---------------------------------------------------------------
-    origins = ["http://localhost:3000", "http://127.0.0.1:3000"]
-    if settings.app_env != "production":
-        origins.append("*")
+    # Explicit allow-list from config — one source of truth for every
+    # environment. Never "*" with credentials (the spec forbids it and browsers
+    # reject it), so origins are always enumerated.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=origins,
+        allow_origins=settings.cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Process-Time-Ms", "X-Request-Id"],
     )
 
-    # --- Request timing -----------------------------------------------------
+    # --- Request timing + trace correlation ---------------------------------
     @app.middleware("http")
     async def add_process_time_header(request: Request, call_next):  # type: ignore[no-untyped-def]
+        # Honor an inbound trace id (e.g. from a gateway) or mint a fresh one,
+        # and bind it so every downstream log line shares the id.
+        incoming = request.headers.get("X-Request-Id")
+        trace_id = bind_trace_id(incoming)
         start = time.perf_counter()
-        response = await call_next(request)
+        try:
+            response = await call_next(request)
+        finally:
+            clear_trace_id()
         elapsed_ms = (time.perf_counter() - start) * 1000
         response.headers["X-Process-Time-Ms"] = f"{elapsed_ms:.1f}"
+        response.headers["X-Request-Id"] = trace_id
         if settings.prometheus_enabled:
             _record_request(request.method, request.url.path, response.status_code, elapsed_ms)
         return response
@@ -103,12 +124,40 @@ def create_app() -> FastAPI:
 
     @app.get("/ready", tags=["system"])
     async def ready() -> Response:
+        """Readiness: a pod that can't reach Postgres *or* Redis is not ready."""
+        checks: dict[str, str] = {}
+        ok = True
+
         try:
             async with engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
-            return JSONResponse({"status": "ready"})
+            checks["postgres"] = "ok"
         except Exception:
-            return JSONResponse({"status": "not_ready"}, status_code=503)
+            checks["postgres"] = "unreachable"
+            ok = False
+
+        try:
+            import redis.asyncio as aioredis
+
+            client = aioredis.from_url(str(settings.redis_url))
+            try:
+                await client.ping()
+                checks["redis"] = "ok"
+            finally:
+                await client.aclose()
+        except Exception:
+            checks["redis"] = "unreachable"
+            ok = False
+
+        # Agents can't run at all without an Anthropic key; surface it (not fatal
+        # for readiness so the dashboard stays reachable, but visible).
+        checks["anthropic_key"] = "present" if settings.anthropic_api_key else "missing"
+
+        status_code = 200 if ok else 503
+        return JSONResponse(
+            {"status": "ready" if ok else "not_ready", "checks": checks},
+            status_code=status_code,
+        )
 
     if settings.prometheus_enabled:
         _install_metrics(app)

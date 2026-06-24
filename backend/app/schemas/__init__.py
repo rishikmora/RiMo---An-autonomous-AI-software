@@ -30,6 +30,19 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
+class TokenPair(BaseModel):
+    """Access + refresh token pair returned by login and refresh."""
+
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int  # access-token lifetime in seconds
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
 class UserCreate(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)

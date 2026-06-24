@@ -97,3 +97,51 @@ class ApprovalKind(str, enum.Enum):
     DEPLOY = "deploy"
     REPO_DELETE = "repo_delete"
     DESTRUCTIVE_MIGRATION = "destructive_migration"
+
+
+class NodeKind(str, enum.Enum):
+    """Vertex types in the project knowledge graph."""
+
+    MODULE = "module"      # a directory / package
+    FILE = "file"
+    CLASS = "class"
+    FUNCTION = "function"
+    API_ROUTE = "api_route"
+    DB_TABLE = "db_table"
+    SERVICE = "service"
+    EXTERNAL = "external"  # third-party dependency (e.g. ffmpeg, react)
+
+
+class EdgeKind(str, enum.Enum):
+    """Directed relationships between knowledge-graph nodes."""
+
+    IMPORTS = "imports"
+    CALLS = "calls"
+    DEFINES = "defines"        # file defines class/function
+    INHERITS = "inherits"
+    DEPENDS_ON = "depends_on"
+    REFERENCES = "references"  # route references a table, etc.
+    CONTAINS = "contains"      # module contains file
+
+
+class ModelProvider(str, enum.Enum):
+    ANTHROPIC = "anthropic"
+    OPENAI = "openai"
+    GOOGLE = "google"
+
+
+class TaskComplexityTier(str, enum.Enum):
+    """Routing tiers: trivial fixes go to cheap models, design to frontier."""
+
+    TRIVIAL = "trivial"      # typo, rename, one-line — smallest model
+    SIMPLE = "simple"        # localized change — fast model
+    STANDARD = "standard"    # normal feature/bugfix — mid model
+    COMPLEX = "complex"      # architecture, multi-file design — frontier model
+
+
+class IncidentStatus(str, enum.Enum):
+    OPEN = "open"
+    DIAGNOSING = "diagnosing"
+    RECOVERED = "recovered"
+    ROLLED_BACK = "rolled_back"
+    ESCALATED = "escalated"   # gave up, needs a human

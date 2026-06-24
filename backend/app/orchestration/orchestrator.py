@@ -35,6 +35,7 @@ from app.agents.registry import get_agent
 from app.agents.tools import WorkspaceFiles
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.core.trace import trace_context
 from app.integrations.github import GitHubClient, GitHubFile
 from app.memory.service import MemoryService
 from app.models import (
@@ -59,8 +60,12 @@ from app.models.enums import (
     TaskStatus,
 )
 from app.orchestration.event_bus import EventBus, get_event_bus
+from app.orchestration.graph import knowledge_graph
+from app.orchestration.refactor import refactor_analyzer
 from app.orchestration.utils import EventEmitter, parse_json_output
 from app.services.llm import AgentResult, LLMClient
+from app.services.metrics import record_agent_run, record_llm_failure
+from app.services.router import model_router
 from app.services.safety import action_guard, secret_scanner
 
 logger = get_logger(__name__)
@@ -70,6 +75,17 @@ _DESIGN_KINDS = {TaskKind.FEATURE, TaskKind.REFACTOR, TaskKind.INFRA}
 # Tasks whose merge should trigger a deployment.
 _DEPLOYABLE_KINDS = {TaskKind.FEATURE, TaskKind.BUGFIX, TaskKind.INFRA}
 _PRIORITY_MAP = {"critical": Priority.CRITICAL, "high": Priority.HIGH, "medium": Priority.MEDIUM, "low": Priority.LOW}
+
+
+def _with_model(agent, model: str):
+    """Return the agent configured to use a specific routed model for this run.
+
+    Agents are singletons; we set the per-run model on the instance. Since the
+    orchestrator runs tasks sequentially per worker, this is safe. Roles that
+    pin their own model (e.g. Memory) are never overridden by the caller.
+    """
+    agent.model = model
+    return agent
 
 
 class Orchestrator:
@@ -135,14 +151,30 @@ class Orchestrator:
     async def _run_agent(
         self, role: AgentRole, ctx: AgentContext
     ) -> tuple[AgentResult, dict[str, Any] | None]:
-        """Execute an agent, record an AgentRun, and parse its JSON output."""
+        """Execute an agent, record an AgentRun, route its model, and log cost."""
         agent = get_agent(role)
-        run = AgentRun(task_id=ctx.task.id, agent_role=role, model=agent.model or settings.default_model)
+
+        # Multi-model routing: pick the most cost-effective model for this work
+        # by complexity tier, then run the agent on it. Falls back gracefully
+        # when a provider isn't keyed (see ModelRouter).
+        routed = model_router.route_for_task(
+            role=role,
+            kind=ctx.task.kind,
+            complexity_points=ctx.task.complexity,
+            files_touched=len(ctx.task.acceptance_criteria) or 1,
+        )
+        if agent.model is None:
+            # Only override roles that didn't pin a specific model themselves.
+            agent = _with_model(agent, routed.model)
+
+        run = AgentRun(task_id=ctx.task.id, agent_role=role, model=routed.model)
         self._session.add(run)
         await self._session.flush()
 
         await self._set_agent_status(ctx.project.id, role, AgentStatus.WORKING, ctx.task.id)
+        started = datetime.now(UTC)
         result = await agent.execute(ctx)
+        latency_ms = int((datetime.now(UTC) - started).total_seconds() * 1000)
 
         run.finished_at = datetime.now(UTC)
         run.success = result.success
@@ -152,6 +184,29 @@ class Orchestrator:
         run.transcript = result.transcript
         run.error = result.error
         await self._increment_agent_usage(ctx.project.id, role, result.usage.input_tokens + result.usage.output_tokens)
+
+        # Economic ledger: record the routed call's dollar cost.
+        call = await model_router.record(
+            self._session,
+            routed=routed,
+            input_tokens=result.usage.input_tokens,
+            output_tokens=result.usage.output_tokens,
+            latency_ms=latency_ms,
+            project_id=ctx.project.id,
+            task_id=ctx.task.id,
+            agent_role=role,
+        )
+        # Agent-level metrics: tokens, cost, outcome, and duration per role.
+        record_agent_run(
+            role=role.value,
+            success=result.success,
+            input_tokens=result.usage.input_tokens,
+            output_tokens=result.usage.output_tokens,
+            cost_usd=call.cost_usd,
+            duration_seconds=latency_ms / 1000,
+        )
+        if not result.success:
+            record_llm_failure(role.value)
         await self._set_agent_status(ctx.project.id, role, AgentStatus.IDLE, None)
 
         return result, parse_json_output(result.final_text)
@@ -174,7 +229,7 @@ class Orchestrator:
         await self._session.flush()
 
         workspace = WorkspaceFiles()
-        gh = self._github_for(project)
+        gh = await self._github_for(project)
 
         # 1) CEO sets mission + objectives.
         ceo_ctx = self._ctx(project, planning_task, github=gh, workspace=workspace,
@@ -257,7 +312,7 @@ class Orchestrator:
         Returns True if the task reached DONE (or a PR awaiting approval).
         """
         emitter = self._emitter(project)
-        gh = self._github_for(project)
+        gh = await self._github_for(project)
         workspace = WorkspaceFiles()
         branch = f"rimo/{task.kind.value}/{str(task.id)[:8]}"
         task.branch_name = branch
@@ -548,7 +603,7 @@ class Orchestrator:
     async def merge_approved(self, project: Project, pr: PullRequest) -> None:
         """Called by the API when a human approves a merge."""
         emitter = self._emitter(project)
-        gh = self._github_for(project)
+        gh = await self._github_for(project)
         if gh and project.repo_full_name and pr.number:
             merge_result = await gh.merge_pull_request(project.repo_full_name, pr.number)
             pr.merge_commit_sha = merge_result.get("sha")
@@ -585,31 +640,168 @@ class Orchestrator:
     # ------------------------------------------------------------------- tick
     async def tick(self, project: Project) -> str:
         """Advance the project by one unit of work. Returns a status string."""
-        await self.ensure_agents(project)
-        if project.status in (ProjectStatus.PAUSED, ProjectStatus.ARCHIVED):
-            return "paused"
+        with trace_context(project_id=str(project.id), project=project.name):
+            await self.ensure_agents(project)
+            if project.status in (ProjectStatus.PAUSED, ProjectStatus.ARCHIVED):
+                return "paused"
 
-        # If no tasks are ready and none are pending, run a planning cycle.
-        ready = await self.next_task(project)
-        if ready is None:
-            pending = (await self._session.execute(
-                select(Task).where(
-                    Task.project_id == project.id,
-                    Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
+            # Hard financial stop: pause autonomous spend at the budget ceiling.
+            if await self._budget_exceeded(project):
+                project.status = ProjectStatus.PAUSED
+                await self._emitter(project).emit(
+                    "budget_halt",
+                    f"Project paused: spend reached the ${settings.max_cost_usd_per_project} cap",
                 )
-            )).scalars().first()
-            if pending is None:
-                await self.plan_project(project)
-                return "planned"
-            return "idle"
+                logger.warning("project_budget_halt", project=str(project.id))
+                return "budget_halt"
 
-        await self.execute_task(project, ready)
-        return "executed_task"
+            # If no tasks are ready and none are pending, run a planning cycle.
+            ready = await self.next_task(project)
+            if ready is None:
+                pending = (await self._session.execute(
+                    select(Task).where(
+                        Task.project_id == project.id,
+                        Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
+                    )
+                )).scalars().first()
+                if pending is None:
+                    await self.plan_project(project)
+                    return "planned"
+                return "idle"
+
+            await self.execute_task(project, ready)
+            return "executed_task"
+
+    async def _budget_exceeded(self, project: Project) -> bool:
+        """True if cumulative model spend has reached the hard per-project cap."""
+        cap = settings.max_cost_usd_per_project
+        if cap <= 0:
+            return False
+        from sqlalchemy import func as _func
+
+        from app.models import ModelCall
+
+        spent = (
+            await self._session.execute(
+                select(_func.coalesce(_func.sum(ModelCall.cost_usd), 0.0)).where(
+                    ModelCall.project_id == project.id
+                )
+            )
+        ).scalar_one()
+        return float(spent) >= cap
+
+    # ------------------------------------------------------ autonomous upkeep
+    async def run_maintenance(self, project: Project) -> dict[str, int]:
+        """Periodic autonomous upkeep: knowledge graph, refactors, research.
+
+        Run on a slow cadence by the worker. Each step is independent and
+        best-effort; a failure in one does not prevent the others. All proposed
+        work lands in the backlog for the Planner to prioritize — nothing here
+        ships autonomously without going through the normal task pipeline.
+        """
+        emitter = self._emitter(project)
+        result = {"graph_nodes": 0, "refactors": 0, "research": 0}
+
+        # 1) Rebuild the knowledge graph from the current repository, if connected.
+        files = await self._fetch_repo_files(project)
+        if files:
+            stats = await knowledge_graph.rebuild(
+                self._session, project_id=project.id, files=files
+            )
+            result["graph_nodes"] = stats["nodes"]
+            await emitter.emit(
+                "graph_rebuilt",
+                f"Knowledge graph rebuilt: {stats['nodes']} nodes, {stats['edges']} edges",
+            )
+
+            # 2) Scan the fresh graph for architectural smells → refactor tasks.
+            refactors = await refactor_analyzer.propose_refactors(
+                self._session, project_id=project.id
+            )
+            result["refactors"] = len(refactors)
+            if refactors:
+                await emitter.emit(
+                    "refactors_proposed",
+                    f"Proposed {len(refactors)} refactor task(s) from architecture analysis",
+                )
+
+        # 3) Autonomous research, only when explicitly requested via the API.
+        if (project.metrics or {}).get("research_requested"):
+            proposed = await self._run_research(project, emitter)
+            result["research"] = proposed
+            meta = dict(project.metrics or {})
+            meta["research_requested"] = False
+            project.metrics = meta
+
+        return result
+
+    async def _fetch_repo_files(self, project: Project) -> dict[str, str]:
+        """Fetch a bounded sample of source files from the connected repo."""
+        if not project.repo_full_name:
+            return {}
+        gh = self._github
+        if gh is None:
+            return {}
+        try:
+            tree = await gh.get_tree(project.repo_full_name, project.default_branch)
+        except Exception:  # noqa: BLE001 - repo may be unavailable
+            return {}
+        files: dict[str, str] = {}
+        source_ext = (".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java")
+        for entry in tree:
+            path = entry.get("path", "")
+            if entry.get("type") == "blob" and path.endswith(source_ext):
+                try:
+                    files[path] = (await gh.get_file(project.repo_full_name, path, project.default_branch))[:8000]
+                except Exception:  # noqa: BLE001
+                    continue
+            if len(files) >= 300:  # bound the work
+                break
+        return files
+
+    async def _run_research(self, project: Project, emitter) -> int:
+        """Run an autonomous research survey and add proposed tasks."""
+        from app.orchestration.research import ResearchEngine
+
+        engine = ResearchEngine(self._web_search)
+
+        async def distiller(context: str) -> list[dict]:
+            prompt = (
+                "From the following research findings, propose up to 5 concrete, "
+                "scoped engineering tasks that would improve this project. Return "
+                'ONLY JSON: {"tasks": [{"title", "rationale", "kind", "priority", '
+                '"complexity"}]}\n\n' + context
+            )
+            resp = await self._llm.complete(
+                system="You are RiMo Research, proposing high-value engineering work.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            parsed = parse_json_output(resp.text if hasattr(resp, "text") else str(resp))
+            return (parsed or {}).get("tasks", [])
+
+        tasks = await engine.propose_tasks(self._session, project=project, distiller=distiller)
+        if tasks:
+            await emitter.emit(
+                "research_complete",
+                f"Autonomous research proposed {len(tasks)} task(s)",
+            )
+        return len(tasks)
 
     # ----------------------------------------------------------------- helpers
-    def _github_for(self, project: Project) -> GitHubClient | None:
-        installation_id = project.owner.github_installation_id if project.owner else None
-        if installation_id and settings.github_app_id:
+    async def _github_for(self, project: Project) -> GitHubClient | None:
+        # Load the owner's installation id with an explicit query — accessing
+        # project.owner directly would trigger a sync lazy-load, which fails
+        # under asyncpg (MissingGreenlet). This must stay query-based.
+        if not settings.github_app_id:
+            return None
+        from app.models import User
+
+        installation_id = (
+            await self._session.execute(
+                select(User.github_installation_id).where(User.id == project.owner_id)
+            )
+        ).scalar_one_or_none()
+        if installation_id:
             return GitHubClient(installation_id)
         return None
 

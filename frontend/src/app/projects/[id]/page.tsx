@@ -20,6 +20,13 @@ import {
   PullRequestList,
   TasksBoard,
 } from "@/components/project-tabs";
+import {
+  EconomicsPanel,
+  GraphPanel,
+  IncidentsPanel,
+  MarketplacePanel,
+  SmellsPanel,
+} from "@/components/intelligence";
 import { Badge, Button, Eyebrow, Panel, PanelHeader, Stat } from "@/components/ui";
 import { useActivityStream, useAuth, usePolling } from "@/hooks";
 import { api } from "@/lib/api";
@@ -27,11 +34,17 @@ import type {
   ActivityEvent,
   AgentView,
   Approval,
+  CentralNode,
+  CostSummary,
   Deployment,
+  GraphData,
+  Incident,
+  MarketplaceAgent,
   MemoryRecord,
   Project,
   ProjectMetrics,
   PullRequest,
+  Smell,
   Task,
 } from "@/types";
 
@@ -44,7 +57,16 @@ const STATUS_TONE: Record<string, string> = {
   archived: "#454C61",
 };
 
-type Tab = "tasks" | "prs" | "deploys" | "memory" | "approvals";
+type Tab =
+  | "tasks"
+  | "prs"
+  | "deploys"
+  | "memory"
+  | "approvals"
+  | "economics"
+  | "graph"
+  | "incidents"
+  | "health";
 
 export default function ProjectPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -79,6 +101,19 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
   const { data: seed } = usePolling<ActivityEvent[]>(() => api.activity(id, 60), 60000, [id]);
   const { events, connected } = useActivityStream(id, seed ?? []);
 
+  // Intelligence layer
+  const { data: economics } = usePolling<CostSummary>(() => api.economics(id), 8000, [id]);
+  const { data: graphStats } = usePolling<GraphData>(() => api.graph(id), 30000, [id]);
+  const { data: central } = usePolling<CentralNode[]>(() => api.centralNodes(id), 30000, [id]);
+  const { data: incidents } = usePolling<Incident[]>(() => api.incidents(id), 8000, [id]);
+  const { data: smells } = usePolling<Smell[]>(() => api.smells(id), 30000, [id]);
+  const { data: recommendedAgents } = usePolling<MarketplaceAgent[]>(
+    () => api.recommendedAgents(id),
+    60000,
+    [id],
+  );
+  const { data: allAgents } = usePolling<MarketplaceAgent[]>(() => api.marketplace(), 120000);
+
   if (!ready) return null;
 
   const pendingApprovals = (approvals ?? []).filter((a) => a.approved === null).length;
@@ -109,6 +144,10 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
     { key: "tasks", label: "Tasks", count: tasks?.length },
     { key: "prs", label: "Pull requests", count: prs?.length },
     { key: "deploys", label: "Deployments", count: deploys?.length },
+    { key: "graph", label: "Knowledge graph", count: graphStats?.stats.nodes },
+    { key: "economics", label: "Economics" },
+    { key: "incidents", label: "Incidents", count: incidents?.length || undefined },
+    { key: "health", label: "Architecture", count: smells?.length || undefined },
     { key: "memory", label: "Memory", count: memory?.length },
     { key: "approvals", label: "Approvals", count: pendingApprovals || undefined },
   ];
@@ -226,6 +265,17 @@ export default function ProjectPage({ params }: { params: Promise<{ id: string }
             {tab === "prs" && <PullRequestList prs={prs ?? []} />}
             {tab === "deploys" && (
               <DeploymentList deployments={deploys ?? []} onChange={refetchDeploys} />
+            )}
+            {tab === "graph" && (
+              <GraphPanel stats={graphStats?.stats ?? null} central={central ?? null} />
+            )}
+            {tab === "economics" && <EconomicsPanel data={economics ?? null} />}
+            {tab === "incidents" && <IncidentsPanel incidents={incidents ?? null} />}
+            {tab === "health" && (
+              <div className="divide-y divide-line">
+                <SmellsPanel smells={smells ?? null} />
+                <MarketplacePanel recommended={recommendedAgents ?? null} all={allAgents ?? null} />
+              </div>
             )}
             {tab === "memory" && <MemoryList memory={memory ?? []} />}
             {tab === "approvals" && (

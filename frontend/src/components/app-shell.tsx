@@ -7,6 +7,7 @@ import {
   Boxes,
   CircuitBoard,
   GitPullRequest,
+  Layers,
   LayoutDashboard,
   LogOut,
 } from "lucide-react";
@@ -15,6 +16,7 @@ import { cn } from "@/lib/utils";
 
 const NAV = [
   { href: "/", label: "Operations", icon: LayoutDashboard },
+  { href: "/fleet", label: "Fleet (OS)", icon: Layers },
   { href: "/projects", label: "Projects", icon: Boxes },
   { href: "/agents", label: "The Floor", icon: CircuitBoard },
 ];

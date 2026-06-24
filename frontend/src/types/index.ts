@@ -199,6 +199,145 @@ export interface ProjectMetrics {
   avg_review_score: number | null;
 }
 
+// --- Intelligence layer (Tier 1–4 subsystems) ---
+
+export interface CostSummary {
+  total_usd: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  calls: number;
+  by_model: Record<string, number>;
+  by_agent: Record<string, number>;
+  cost_per_completed_task: number | null;
+  cost_per_merged_pr: number | null;
+  naive_baseline_usd: number;
+  routing_savings_usd: number;
+  routing_savings_pct: number;
+}
+
+export type NodeKind =
+  | "module"
+  | "file"
+  | "class"
+  | "function"
+  | "api_route"
+  | "db_table"
+  | "service"
+  | "external";
+
+export interface GraphNodeData {
+  id: string;
+  kind: NodeKind;
+  key: string;
+  name: string;
+  path: string | null;
+  centrality: number;
+  summary: string | null;
+}
+
+export interface GraphEdgeData {
+  source: string;
+  target: string;
+  kind: string;
+  weight: number;
+}
+
+export interface GraphData {
+  nodes: GraphNodeData[];
+  edges: GraphEdgeData[];
+  stats: { nodes: number; edges: number };
+}
+
+export interface CentralNode {
+  name: string;
+  kind: NodeKind;
+  path: string | null;
+  centrality: number;
+}
+
+export type IncidentStatus =
+  | "open"
+  | "diagnosing"
+  | "recovered"
+  | "rolled_back"
+  | "escalated";
+
+export interface IncidentStep {
+  kind: string;
+  detail: string;
+  at: string;
+}
+
+export interface Incident {
+  id: string;
+  title: string;
+  trigger: string;
+  status: IncidentStatus;
+  attempts: number;
+  diagnosis: string | null;
+  resolution: string | null;
+  timeline: IncidentStep[];
+  created_at: string;
+}
+
+export interface SpendCall {
+  model: string;
+  provider: string;
+  cost_usd: number;
+  tokens: number;
+  purpose: string | null;
+}
+
+export interface SpendData {
+  total_usd: number;
+  recent_calls: SpendCall[];
+}
+
+export interface PromptVariantStat {
+  name: string;
+  generation: number;
+  active: boolean;
+  trials: number;
+  successes: number;
+  success_rate: number;
+  mean_reward: number;
+}
+
+export interface ProjectHealth {
+  project_id: string;
+  name: string;
+  status: ProjectStatus;
+  open_tasks: number;
+  pending_approvals: number;
+  is_running: boolean;
+  attention_score: number;
+}
+
+export interface FleetView {
+  total_projects: number;
+  running: number;
+  blocked: number;
+  total_open_tasks: number;
+  total_pending_approvals: number;
+  projects: ProjectHealth[];
+}
+
+export interface Smell {
+  kind: string;
+  node_name: string;
+  metric: string;
+  severity: number;
+  suggestion: string;
+  members: string[];
+}
+
+export interface MarketplaceAgent {
+  slug: string;
+  title: string;
+  expertise: string;
+  triggers?: string[];
+}
+
 export const ALL_ROLES: AgentRole[] = [
   "ceo",
   "research",

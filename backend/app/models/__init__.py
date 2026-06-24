@@ -42,7 +42,11 @@ from app.models.enums import (
     AgentStatus,
     ApprovalKind,
     DeploymentStatus,
+    EdgeKind,
+    IncidentStatus,
     MemoryKind,
+    ModelProvider,
+    NodeKind,
     Priority,
     ProjectStatus,
     PullRequestStatus,
@@ -307,3 +311,172 @@ class ActivityEvent(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), index=True
     )
+
+
+# ---------------------------------------------------------------------------
+# Knowledge graph — RiMo's structural "brain" for a project.
+# ---------------------------------------------------------------------------
+class GraphNode(Base, TimestampMixin):
+    """A vertex in the project knowledge graph (file, class, function, table...)."""
+
+    __tablename__ = "graph_nodes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[NodeKind] = mapped_column(Enum(NodeKind, native_enum=False), index=True)
+    # Stable identity within a project, e.g. "frontend/Timeline.tsx::class:Timeline".
+    key: Mapped[str] = mapped_column(String(1024), index=True)
+    name: Mapped[str] = mapped_column(String(512))
+    path: Mapped[str | None] = mapped_column(String(1024))  # source file path
+    signature: Mapped[str | None] = mapped_column(Text)     # function/class signature
+    summary: Mapped[str | None] = mapped_column(Text)       # one-line semantic summary
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Graph-derived importance (PageRank-style centrality), 0..1.
+    centrality: Mapped[float] = mapped_column(Float, default=0.0)
+
+    __table_args__ = (UniqueConstraint("project_id", "key", name="uq_graph_node_key"),)
+
+
+class GraphEdge(Base):
+    """A directed relationship between two knowledge-graph nodes."""
+
+    __tablename__ = "graph_edges"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    source_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("graph_nodes.id", ondelete="CASCADE"), index=True
+    )
+    target_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("graph_nodes.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[EdgeKind] = mapped_column(Enum(EdgeKind, native_enum=False), index=True)
+    weight: Mapped[float] = mapped_column(Float, default=1.0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("source_id", "target_id", "kind", name="uq_graph_edge"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Self-evolving prompts — variants compete on measured success rate.
+# ---------------------------------------------------------------------------
+class PromptVariant(Base, TimestampMixin):
+    """A candidate prompt for a given agent role, with live performance stats."""
+
+    __tablename__ = "prompt_variants"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    role: Mapped[AgentRole] = mapped_column(Enum(AgentRole, native_enum=False), index=True)
+    name: Mapped[str] = mapped_column(String(128))
+    template: Mapped[str] = mapped_column(Text, nullable=False)
+    # Lineage: which variant this was mutated from (for the evolution loop).
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("prompt_variants.id", ondelete="SET NULL")
+    )
+    generation: Mapped[int] = mapped_column(Integer, default=0)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Running tallies updated after each execution.
+    trials: Mapped[int] = mapped_column(Integer, default=0)
+    successes: Mapped[int] = mapped_column(Integer, default=0)
+    total_reward: Mapped[float] = mapped_column(Float, default=0.0)  # sum of per-run rewards
+
+    __table_args__ = (UniqueConstraint("role", "name", name="uq_prompt_variant_name"),)
+
+    @property
+    def success_rate(self) -> float:
+        return self.successes / self.trials if self.trials else 0.0
+
+
+class PromptExecution(Base):
+    """One use of a prompt variant, with its outcome — the evolution training set."""
+
+    __tablename__ = "prompt_executions"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    variant_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("prompt_variants.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    success: Mapped[bool] = mapped_column(Boolean)
+    reward: Mapped[float] = mapped_column(Float, default=0.0)  # 0..1 quality signal
+    tokens: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Economic reasoning — a ledger of every model call's cost.
+# ---------------------------------------------------------------------------
+class ModelCall(Base):
+    """A single LLM call with its routed model, token counts, and dollar cost."""
+
+    __tablename__ = "model_calls"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    project_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    agent_role: Mapped[AgentRole | None] = mapped_column(Enum(AgentRole, native_enum=False))
+    provider: Mapped[ModelProvider] = mapped_column(Enum(ModelProvider, native_enum=False))
+    model: Mapped[str] = mapped_column(String(128), index=True)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    purpose: Mapped[str | None] = mapped_column(String(64))  # routing tier / debate stage
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
+# ---------------------------------------------------------------------------
+# Failure recovery — incident records for autonomous diagnosis & rollback.
+# ---------------------------------------------------------------------------
+class Incident(Base, TimestampMixin):
+    """An autonomous incident: a failure RiMo diagnosed, recovered, or escalated."""
+
+    __tablename__ = "incidents"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    project_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True
+    )
+    task_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    title: Mapped[str] = mapped_column(String(512))
+    status: Mapped[IncidentStatus] = mapped_column(
+        Enum(IncidentStatus, native_enum=False), default=IncidentStatus.OPEN, index=True
+    )
+    trigger: Mapped[str] = mapped_column(String(128))  # what failed: build, test, deploy...
+    diagnosis: Mapped[str | None] = mapped_column(Text)
+    resolution: Mapped[str | None] = mapped_column(Text)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    timeline: Mapped[list] = mapped_column(JSONB, default=list)  # ordered recovery steps
+
+
+class RefreshToken(Base):
+    """A hashed, revocable refresh token for the rotation-based auth flow.
+
+    Only the SHA-256 hash of the token is stored, so a database leak does not
+    expose usable tokens. Revocation = deleting (or marking) the row, which the
+    access-token path cannot do on its own.
+    """
+
+    __tablename__ = "refresh_tokens"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=_uuid)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

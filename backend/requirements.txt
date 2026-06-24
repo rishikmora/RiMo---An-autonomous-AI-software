@@ -1,3 +1,6 @@
+# RiMo backend — runtime dependencies.
+# Dev/test/lint tools live in requirements-dev.txt.
+
 # --- Web framework ----------------------------------------------------------
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
@@ -21,16 +24,18 @@ openai==1.59.2            # optional embeddings provider; falls back if unset
 
 # --- Auth --------------------------------------------------------------------
 pyjwt[crypto]==2.10.1
-passlib[bcrypt]==1.7.4
+bcrypt==5.0.0            # used directly (passlib is incompatible with bcrypt 5+)
+
+# --- Rate limiting ----------------------------------------------------------
+slowapi==0.1.10          # Redis-backed per-IP throttling on auth endpoints
 
 # --- Infra clients ----------------------------------------------------------
 redis==5.2.1
 httpx==0.28.1
 
+# --- Graph / analysis -------------------------------------------------------
+networkx==3.4.2         # knowledge-graph centrality + refactor analysis
+
 # --- Observability ----------------------------------------------------------
 structlog==24.4.0
 prometheus-client==0.21.1
-
-# --- Testing ----------------------------------------------------------------
-pytest==8.3.4
-pytest-asyncio==0.25.0

@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase
+from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 
@@ -19,13 +20,20 @@ class Base(DeclarativeBase):
     """Declarative base for all ORM models."""
 
 
-engine: AsyncEngine = create_async_engine(
-    str(settings.database_url),
-    pool_size=settings.db_pool_size,
-    max_overflow=settings.db_max_overflow,
-    pool_pre_ping=True,
-    echo=settings.db_echo,
-)
+# Tests run each case on a fresh event loop (pytest-asyncio function scope);
+# pooled asyncpg connections are bound to the loop that created them, so reusing
+# them across loops raises spurious errors. NullPool (opened when db_pool_size==0)
+# hands out a fresh connection each time, which is correct for tests. Production
+# keeps a real pool.
+_use_null_pool = settings.db_pool_size == 0
+_engine_kwargs: dict = {"pool_pre_ping": True, "echo": settings.db_echo}
+if _use_null_pool:
+    _engine_kwargs["poolclass"] = NullPool
+else:
+    _engine_kwargs["pool_size"] = settings.db_pool_size
+    _engine_kwargs["max_overflow"] = settings.db_max_overflow
+
+engine: AsyncEngine = create_async_engine(str(settings.database_url), **_engine_kwargs)
 
 SessionLocal = async_sessionmaker(
     bind=engine,
