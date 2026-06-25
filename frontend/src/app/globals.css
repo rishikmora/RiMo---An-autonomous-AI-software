@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body {
+  background: #0a0b0f;
+  color: #e8eaf0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Ambient grid texture for the ops-console feel — quiet, not decorative noise. */
+.bg-grid {
+  background-image:
+    linear-gradient(to right, rgba(38, 42, 56, 0.35) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(38, 42, 56, 0.35) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(ellipse 80% 60% at 50% 0%, #000 40%, transparent 100%);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #262a38;
+  border-radius: 999px;
+  border: 2px solid #0a0b0f;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #353b4d;
+}
+
+*:focus-visible {
+  outline: 2px solid #5b8cff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

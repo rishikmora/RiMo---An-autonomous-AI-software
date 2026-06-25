@@ -1,0 +1,119 @@
+# RiMo — full local/single-host stack.
+#
+#   docker compose up --build
+#
+# Brings up Postgres (with pgvector), Redis, runs DB migrations once, then
+# starts the API, the autonomous worker, and the Next.js dashboard.
+#
+# Copy .env.example to .env and fill in ANTHROPIC_API_KEY (and GitHub creds for
+# real repository operations) before starting.
+
+name: rimo
+
+x-backend-env: &backend-env
+  APP_ENV: ${APP_ENV:-development}
+  SECRET_KEY: ${SECRET_KEY:?set SECRET_KEY in .env (min 32 chars)}
+  DATABASE_URL: postgresql+asyncpg://rimo:${POSTGRES_PASSWORD:-rimo}@postgres:5432/rimo
+  REDIS_URL: redis://redis:6379/0
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  GITHUB_APP_ID: ${GITHUB_APP_ID:-}
+  GITHUB_PRIVATE_KEY: ${GITHUB_PRIVATE_KEY:-}
+  GITHUB_WEBHOOK_SECRET: ${GITHUB_WEBHOOK_SECRET:-}
+  WORKSPACE_ROOT: /data/workspaces
+  LOG_JSON: ${LOG_JSON:-true}
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: rimo
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rimo}
+      POSTGRES_DB: rimo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rimo -d rimo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  # One-shot job: enable pgvector extension + run Alembic migrations to head.
+  migrate:
+    build:
+      context: ./backend
+    environment:
+      <<: *backend-env
+    command: >
+      sh -c "python -c \"import psycopg; c=psycopg.connect('postgresql://rimo:${POSTGRES_PASSWORD:-rimo}@postgres:5432/rimo'); c.autocommit=True; c.execute('CREATE EXTENSION IF NOT EXISTS vector'); print('pgvector ready')\"
+      && alembic upgrade head"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      <<: *backend-env
+    volumes:
+      - workspaces:/data/workspaces
+    ports:
+      - "8000:8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # The 24/7 autonomous loop. Same image, different entrypoint.
+  worker:
+    build:
+      context: ./backend
+    environment:
+      <<: *backend-env
+    command: ["python", "-m", "app.orchestration.worker"]
+    volumes:
+      - workspaces:/data/workspaces
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      RIMO_API_URL: http://api:8000
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  redisdata:
+  workspaces:
